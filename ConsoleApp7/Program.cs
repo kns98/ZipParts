@@ -41,9 +41,9 @@ class FileStreamHandler : StreamHandler
 {
     private string filePath;
 
-    public FileStreamHandler(string filePath)
+    public FileStreamHandler()
     {
-        this.filePath = filePath;
+        filePath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         stream = new FileStream(filePath, FileMode.Create, FileAccess.ReadWrite);
     }
 
@@ -72,7 +72,7 @@ class FileStreamHandler : StreamHandler
 
 class StreamFactory
 {
-    public static StreamHandler CreateStreamHandler(long memoryThreshold, string filePath)
+    public static StreamHandler CreateStreamHandler(long memoryThreshold)
     {
         long availableMemory = GetAvailableMemory();
         if (availableMemory > memoryThreshold)
@@ -81,7 +81,7 @@ class StreamFactory
         }
         else
         {
-            return new FileStreamHandler(filePath);
+            return new FileStreamHandler();
         }
     }
 
@@ -100,7 +100,6 @@ class Program
     static void Main(string[] args)
     {
         // Default configuration
-        string filePath = "tempfile.tmp";
         long dataSizeMB = 50; // Default 50 MB
         long memoryThresholdMB = 100; // Default 100 MB
 
@@ -109,12 +108,6 @@ class Program
         {
             switch (args[i])
             {
-                case "--file":
-                    if (i + 1 < args.Length)
-                    {
-                        filePath = args[i + 1];
-                    }
-                    break;
                 case "--size":
                     if (i + 1 < args.Length && long.TryParse(args[i + 1], out long size))
                     {
@@ -146,7 +139,7 @@ class Program
         long memoryThresholdBytes = memoryThresholdMB * 1024 * 1024;
 
         // Use the factory to create the appropriate stream handler
-        StreamHandler streamHandler = StreamFactory.CreateStreamHandler(memoryThresholdBytes, filePath);
+        StreamHandler streamHandler = StreamFactory.CreateStreamHandler(memoryThresholdBytes);
 
         try
         {
