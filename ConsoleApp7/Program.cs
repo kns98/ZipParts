@@ -4,67 +4,45 @@ using System.IO.Compression;
 using System.Collections.Generic;
 using System.Diagnostics;
 
-abstract class StreamHandler
+abstract class StreamHandler : IDisposable
 {
-    protected Stream stream;
-
-    public abstract void WriteData(byte[] data);
-    public abstract byte[] ReadData();
+    public abstract Stream Stream { get; }
     public abstract void Dispose();
 }
 
 class MemoryStreamHandler : StreamHandler
 {
+    private MemoryStream memoryStream;
+
     public MemoryStreamHandler()
     {
-        stream = new MemoryStream();
+        memoryStream = new MemoryStream();
     }
 
-    public override void WriteData(byte[] data)
-    {
-        stream.Write(data, 0, data.Length);
-    }
-
-    public override byte[] ReadData()
-    {
-        stream.Position = 0;
-        byte[] data = new byte[stream.Length];
-        stream.Read(data, 0, data.Length);
-        return data;
-    }
+    public override Stream Stream => memoryStream;
 
     public override void Dispose()
     {
-        stream.Dispose();
+        memoryStream.Dispose();
     }
 }
 
 class FileStreamHandler : StreamHandler
 {
     private string filePath;
+    private FileStream fileStream;
 
-    public FileStreamHandler()
+    public FileStreamHandler(string filePath)
     {
-        filePath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
-        stream = new FileStream(filePath, FileMode.Create, FileAccess.ReadWrite);
+        this.filePath = filePath;
+        fileStream = new FileStream(filePath, FileMode.Create, FileAccess.ReadWrite);
     }
 
-    public override void WriteData(byte[] data)
-    {
-        stream.Write(data, 0, data.Length);
-    }
-
-    public override byte[] ReadData()
-    {
-        stream.Position = 0;
-        byte[] data = new byte[stream.Length];
-        stream.Read(data, 0, data.Length);
-        return data;
-    }
+    public override Stream Stream => fileStream;
 
     public override void Dispose()
     {
-        stream.Dispose();
+        fileStream.Dispose();
         if (File.Exists(filePath))
         {
             File.Delete(filePath);
@@ -72,28 +50,44 @@ class FileStreamHandler : StreamHandler
     }
 }
 
-class StreamFactory
+class StreamHandlerFactory : IDisposable
 {
-    public static StreamHandler CreateStreamHandler(long memoryThreshold)
+    private List<StreamHandler> handlers = new List<StreamHandler>();
+
+    public StreamHandler CreateHandler(string filePath, long memoryThreshold)
     {
         long availableMemory = GetAvailableMemory();
+        StreamHandler handler;
+
         if (availableMemory > memoryThreshold)
         {
-            return new MemoryStreamHandler();
+            handler = new MemoryStreamHandler();
         }
         else
         {
-            return new FileStreamHandler();
+            handler = new FileStreamHandler(filePath);
         }
+
+        handlers.Add(handler);
+        return handler;
     }
 
     private static long GetAvailableMemory()
     {
-        // Use PerformanceCounter to get available physical memory
         using (PerformanceCounter pc = new PerformanceCounter("Memory", "Available Bytes"))
         {
             return Convert.ToInt64(pc.NextValue());
         }
+    }
+
+    public void Dispose()
+    {
+        foreach (var handler in handlers)
+        {
+            handler.Dispose();
+        }
+
+        handlers.Clear();
     }
 }
 
@@ -178,7 +172,10 @@ class Program
         long partSizeBytes = partSizeMB * 1024 * 1024;
         long memoryThresholdBytes = memoryThresholdMB * 1024 * 1024;
 
-        CreateZipParts(inputDirectory, outputDirectory, partSizeBytes, memoryThresholdBytes);
+        using (var factory = new StreamHandlerFactory())
+        {
+            CreateZipParts(factory, inputDirectory, outputDirectory, partSizeBytes, memoryThresholdBytes);
+        }
 
         Console.WriteLine("Zipping complete.");
     }
@@ -195,7 +192,7 @@ class Program
         Console.WriteLine("  --bluray              : Set size constraints for Blu-ray capacity (25000MB).");
     }
 
-    static void CreateZipParts(string inputDir, string outputDir, long partSizeBytes, long memoryThresholdBytes)
+    static void CreateZipParts(StreamHandlerFactory factory, string inputDir, string outputDir, long partSizeBytes, long memoryThresholdBytes)
     {
         var files = Directory.GetFiles(inputDir, "*.*", SearchOption.AllDirectories);
         var currentZipFiles = new List<string>();
@@ -209,7 +206,7 @@ class Program
 
             if (currentZipSize + fileSize > partSizeBytes)
             {
-                CreateZip(currentZipFiles, outputDir, zipPartNumber, memoryThresholdBytes);
+                CreateZip(factory, currentZipFiles, outputDir, zipPartNumber, memoryThresholdBytes);
                 currentZipFiles.Clear();
                 currentZipSize = 0;
                 zipPartNumber++;
@@ -222,18 +219,18 @@ class Program
         // Create the last zip if there are remaining files
         if (currentZipFiles.Count > 0)
         {
-            CreateZip(currentZipFiles, outputDir, zipPartNumber, memoryThresholdBytes);
+            CreateZip(factory, currentZipFiles, outputDir, zipPartNumber, memoryThresholdBytes);
         }
     }
 
-    static void CreateZip(List<string> files, string outputDir, int partNumber, long memoryThresholdBytes)
+    static void CreateZip(StreamHandlerFactory factory, List<string> files, string outputDir, int partNumber, long memoryThresholdBytes)
     {
+        string tempZipPath = Path.Combine(Path.GetTempPath(), Path.GetRandomFileName());
         string zipFileName = Path.Combine(outputDir, $"archive_part{partNumber:D3}.zip");
 
-        StreamHandler streamHandler = StreamFactory.CreateStreamHandler(memoryThresholdBytes);
-        try
+        using (StreamHandler streamHandler = factory.CreateHandler(tempZipPath, memoryThresholdBytes))
         {
-            using (ZipArchive zip = new ZipArchive(streamHandler.stream, ZipArchiveMode.Create, true))
+            using (ZipArchive zip = new ZipArchive(streamHandler.Stream, ZipArchiveMode.Create, true))
             {
                 foreach (var file in files)
                 {
@@ -244,13 +241,9 @@ class Program
 
             using (FileStream outputStream = new FileStream(zipFileName, FileMode.Create, FileAccess.Write))
             {
-                streamHandler.stream.Position = 0;
-                streamHandler.stream.CopyTo(outputStream);
+                streamHandler.Stream.Position = 0;
+                streamHandler.Stream.CopyTo(outputStream);
             }
-        }
-        finally
-        {
-            streamHandler.Dispose();
         }
 
         Console.WriteLine($"Created {zipFileName}");
